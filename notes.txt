@@ -1,0 +1,9 @@
+- Target 3v3, so 1S lipo
+- Integrated charger, mcu detects low voltage
+- No protection for battery+programming at the same time
+
+https://download.mikroe.com/documents/add-on-boards/click/eink/eink-click-schematic-v101.pdf
+
+- ESP32 in deep sleep - 2.8uA
+- Around 45mA when in use (no wifi)
+- takes about 140ms to wake up from deep sleep with an interrupt
