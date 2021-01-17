@@ -4,7 +4,6 @@
 #include <MiniGrafx.h>        // Copyright (c) 2017 by Daniel Eichhorn https://github.com/ThingPulse/minigrafx
 #include "DisplayDriver.h"    // Copyright (c) 2017 by Daniel Eichhorn https://github.com/ThingPulse/minigrafx
 #include "ArialRounded.h"     // Copyright (c) 2017 by Daniel Eichhorn https://github.com/ThingPulse/minigrafx
-#include "owm_credentials2.h" // See 'owm_credentials' tab and enter your OWM API key and set the Wifi SSID and PASSWORD
 #include <ArduinoJson.h>      // https://github.com/bblanchon/ArduinoJson NOTE: *** MUST BE Version-6 or above ***
 
 #include <Adafruit_Si7021.h>
@@ -15,10 +14,9 @@
 #include <SPIFFS.h>
 #include <AsyncMqttClient.h>
 
-/********Weather headers********/
+#define SLEEP_TIME  15      // Time in seconds to deep sleep
 
 WiFiClient client; // wifi client object
-/*******************/
 
 const char *ssid = "jigglypop";
 const char *password = "r1cerb0y";
@@ -29,6 +27,21 @@ const char *MQTT_USER = "mqtt";
 const char *MQTT_PASS = "mqtt123";
 
 AsyncMqttClient mqttClient;
+
+#define PIN_PAPER_BUSY 4
+#define PIN_PAPER_RST 16
+#define PIN_PAPER_DC 17
+#define PIN_PAPER_CLK 18
+#define PIN_PAPER_CS 5
+#define PIN_PAPER_DIN 23
+
+#define SCREEN_WIDTH 400
+#define SCREEN_HEIGHT 300
+#define BITS_PER_PIXEL 1
+uint16_t palette[] = {0, 1};
+
+EPD_WaveShare42 epd(PIN_PAPER_CS, PIN_PAPER_RST, PIN_PAPER_DC, PIN_PAPER_BUSY);
+MiniGrafx gfx = MiniGrafx(&epd, BITS_PER_PIXEL, palette);
 
 #define HOST_NAME "eWeather"
 
@@ -42,12 +55,7 @@ AsyncMqttClient mqttClient;
 #define INTERVAL_NET 30
 #define INTERVAL_REMOTE_TIMEOUT 45 // How many seconds until we timeout waiting for the remote sensor to transmit
 
-#define PIN_PAPER_BUSY 4
-#define PIN_PAPER_RST 16
-#define PIN_PAPER_DC 17
-#define PIN_PAPER_CLK 18
-#define PIN_PAPER_CS 5
-#define PIN_PAPER_DIN 23
+
 
 #define PIN_CHGSTAT 14
 #define PIN_ADC_BATT 32
@@ -56,17 +64,13 @@ AsyncMqttClient mqttClient;
 #define PIN_LED2 15
 #define PIN_BUZZER 27
 
-bool screenUpdate = false;
-
-bool batteryStatus;
-
 Adafruit_Si7021 sensor = Adafruit_Si7021();
 
 int remoteTemp;
 float remoteHumidity;
 
 double lastTemp, lastHumidity;
-
+double waitingMillis;
 
 void updateLocalWeather();
 void drawScreen();
@@ -161,8 +165,17 @@ void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties 
     setRemoteTemperature(String(payload).toFloat());
 }
 
+void getRemoteWeather()
+{
+  Serial.println("Connecting to MQTT...");
+  connectToMqtt();
+  waitingMillis = millis();
+  lastTemp = lastHumidity = 0;
+}
+
 void setup()
 {
+  btStop();
   pinMode(19, INPUT); // Hack until PCB revision 3
 
   pinMode(PIN_LED1, OUTPUT);
@@ -186,14 +199,28 @@ void setup()
   mqttClient.setCredentials(MQTT_USER, MQTT_PASS);
   
   StartWiFi();
-  delay(250);
-  Serial.println("Connecting to MQTT...");
-  connectToMqtt();
-  Serial.println("Done.");
+
+  getRemoteWeather();
+
+  gfx.init();
+  gfx.setRotation(0);
+  gfx.setFastRefresh(false);
+
 }
 void loop()
 {
+  // Have we got both messages to update our temp and humidity?
+  if (lastTemp > waitingMillis && lastHumidity > waitingMillis)
+  {
+    Serial.println("Update received, draw and sleep...");
+    mqttClient.unsubscribe("rtl_433/cba70ce2a24f/devices/Acurite-Tower/A/4131/humidity");
+    mqttClient.unsubscribe("rtl_433/cba70ce2a24f/devices/Acurite-Tower/A/4131/temperature_C");
+    StopWiFi();
+    mqttClient.disconnect();
 
+    drawScreen();
+    sleepyTime();
+  }
 }
 
 float getBatteryVoltage()
@@ -212,11 +239,9 @@ float getBatteryVoltage()
 int StartWiFi()
 {
   int connAttempts = 0;
-  Serial.print(F("\r\nConnecting to: "));
-  Serial.println(String(ssid1));
   WiFi.disconnect();
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid1, password1);
+  WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED)
   {
     delay(500);
@@ -240,11 +265,14 @@ void StopWiFi()
 
 void sleepyTime()
 {
-
+  esp_sleep_enable_timer_wakeup(SLEEP_TIME * 1000000);
+  Serial.flush(); 
+  esp_deep_sleep_start();
 }
 
 void drawScreen()
 {
+  uint8_t rotation = 0;
   //sensor.readTemperature
   //sensor.readHumidity
   //remoteTemp, remoteHumidity
@@ -257,4 +285,19 @@ void drawScreen()
   Serial.println(remoteHumidity);
 
   Serial.println(voltage);
+
+
+  gfx.setRotation(rotation);
+  gfx.fillBuffer(1);
+  gfx.setColor(0);
+  gfx.setFont(ArialMT_Plain_10);
+  gfx.drawLine(0, 0, gfx.getWidth(), gfx.getHeight());
+  gfx.drawString(10, 10, "Hello World");
+  gfx.setFont(ArialMT_Plain_16);
+  gfx.drawString(10, 30, "Everything works!");
+  gfx.setFont(ArialMT_Plain_24);
+  gfx.drawString(10, 55, "Yes! Millis: " + String(millis()));
+  gfx.drawString(10, 80, "Rotation: " + String(rotation));
+  gfx.commit();
+  epd.Sleep();
 }
