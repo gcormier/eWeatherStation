@@ -13,6 +13,7 @@
 #include <ArduinoOTA.h>
 #include <WebServer.h>
 #include <SPIFFS.h>
+#include <AsyncMqttClient.h>
 
 /********Weather headers********/
 
@@ -22,12 +23,12 @@ WiFiClient client; // wifi client object
 const char *ssid = "jigglypop";
 const char *password = "r1cerb0y";
 
-RTC_DATA_ATTR unsigned long currentMillis = 0;
-RTC_DATA_ATTR unsigned long lastLocalMillis = 0, lastRemoteMillis = 0, lastNetMillis = 0;
-unsigned long waitingRemoteWeather = 0;
+#define MQTT_HOST IPAddress(192, 168, 1, 33)
+#define MQTT_PORT 1883
+const char *MQTT_USER = "mqtt";
+const char *MQTT_PASS = "mqtt123";
 
-const char HelloWorld[] = "Hello World!";
-const char HelloArduino[] = "Hello Arduino!";
+AsyncMqttClient mqttClient;
 
 #define HOST_NAME "eWeather"
 
@@ -55,26 +56,20 @@ const char HelloArduino[] = "Hello Arduino!";
 #define PIN_LED2 15
 #define PIN_BUZZER 27
 
-#define PIN_RADIO 25
-#define PIN_RADIO_EN 26
-
 bool screenUpdate = false;
 
-byte currentTemp;
-byte currentHumidity;
 bool batteryStatus;
 
 Adafruit_Si7021 sensor = Adafruit_Si7021();
 
-RTC_DATA_ATTR float localTemp, localHumidity;
-RTC_DATA_ATTR float remoteTemp, remoteHumidity;
-RTC_DATA_ATTR bool remoteBatteryLow, localBatteryLow;
+int remoteTemp;
+float remoteHumidity;
+
+double lastTemp, lastHumidity;
+
 
 void updateLocalWeather();
-void updateNetWeather();
-void updateRemoteWeather();
-void pulseISR();
-void updateScreen();
+void drawScreen();
 void sleepyTime();
 void startWeather();
 int StartWiFi();
@@ -118,26 +113,62 @@ void initLocalSensor()
 
 void getLocalReadings()
 {
-  localTemp = sensor.readTemperature();
-  localHumidity = sensor.readHumidity();
+  //localTemp = sensor.readTemperature();
+  //localHumidity = sensor.readHumidity();
 }
 
-void getRemoteReadings()
+void setRemoteHumidity(int humidity)
 {
+  Serial.print("Setting remote humidity to ");
+  Serial.println(humidity);
+  remoteHumidity = humidity;
+  lastHumidity = millis();
+}
+
+void setRemoteTemperature(float temperature)
+{
+  Serial.print("Setting remote temperature to ");
+  Serial.println(temperature);
+  remoteTemp = temperature;
+  lastTemp = millis();
+}
+
+void connectToMqtt()
+{
+  Serial.println("Connecting to MQTT...");
+  mqttClient.connect();
+}
+
+void onMqttConnect(bool sessionPresent)
+{
+  Serial.println("Connected to MQTT.");
+  mqttClient.subscribe("rtl_433/cba70ce2a24f/devices/Acurite-Tower/A/4131/humidity", 1);
+  mqttClient.subscribe("rtl_433/cba70ce2a24f/devices/Acurite-Tower/A/4131/temperature_C", 1);
+}
+
+void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total)
+{
+  Serial.println("Publish received.");
+  Serial.print("  topic: ");
+  Serial.println(topic);
+
+  Serial.println(payload);
+  String tp = String(topic);
+  
+  if (tp.indexOf("humidity") > 0)
+    setRemoteHumidity(String(payload).toInt());
+  else if (tp.indexOf("temperature") > 0)
+    setRemoteTemperature(String(payload).toFloat());
 }
 
 void setup()
 {
   pinMode(19, INPUT); // Hack until PCB revision 3
 
-  pinMode(PIN_RADIO_EN, OUTPUT);
-  pinMode(PIN_RADIO, INPUT);
   pinMode(PIN_LED1, OUTPUT);
   pinMode(PIN_LED2, OUTPUT);
   pinMode(PIN_ADC_BATT, INPUT);
   pinMode(PIN_CHGSTAT, INPUT);
-
-  digitalWrite(PIN_RADIO_EN, LOW);
   digitalWrite(PIN_LED1, LOW);
   digitalWrite(PIN_LED2, LOW);
 
@@ -149,103 +180,81 @@ void setup()
   // 35mA when checking remote
   // 25mA when checking local
 
-  void loop()
+  mqttClient.onConnect(onMqttConnect);
+  mqttClient.onMessage(onMqttMessage);
+  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
+  mqttClient.setCredentials(MQTT_USER, MQTT_PASS);
+  
+  StartWiFi();
+  delay(250);
+  Serial.println("Connecting to MQTT...");
+  connectToMqtt();
+  Serial.println("Done.");
+}
+void loop()
+{
+
+}
+
+float getBatteryVoltage()
+{
+  analogReadResolution(12);
+  analogSetAttenuation(ADC_0db);
+  analogSetWidth(12);
+  adcAttachPin(PIN_ADC_BATT);
+
+  uint16_t val = analogRead(PIN_ADC_BATT);
+  float conv = val / 4096.0;
+
+  return ((conv * 620) / 150) + BATTERY_OFFSET;
+}
+
+int StartWiFi()
+{
+  int connAttempts = 0;
+  Serial.print(F("\r\nConnecting to: "));
+  Serial.println(String(ssid1));
+  WiFi.disconnect();
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid1, password1);
+  while (WiFi.status() != WL_CONNECTED)
   {
-    checkForActivity();
-
-    if (screenUpdate)
+    delay(500);
+    Serial.print(".");
+    if (connAttempts > 20)
     {
-      screenUpdate = false;
-      updateScreen();
-    }
-
-    // Check if we can go to sleep
-    if (waitingRemoteWeather == 0)
-    {
+      WiFi.disconnect();
       sleepyTime();
     }
+    connAttempts++;
   }
+  Serial.println("WiFi connected at: " + String(WiFi.localIP()));
+  return 1;
+}
 
-  float getBatteryVoltage()
-  {
-    analogReadResolution(12);
-    analogSetAttenuation(ADC_0db);
-    analogSetWidth(12);
-    adcAttachPin(PIN_ADC_BATT);
+void StopWiFi()
+{
+  WiFi.disconnect();
+  WiFi.mode(WIFI_OFF);
+}
 
-    uint16_t val = analogRead(PIN_ADC_BATT);
-    float conv = val / 4096.0;
+void sleepyTime()
+{
 
-    return ((conv * 620) / 150) + BATTERY_OFFSET;
-  }
+}
 
-  /* ****
-  Weather code below
-  */
+void drawScreen()
+{
+  //sensor.readTemperature
+  //sensor.readHumidity
+  //remoteTemp, remoteHumidity
+  float voltage = getBatteryVoltage();
 
-  void startWeather()
-  {
-    StartWiFi();
-    SetupTime();
-    bool Received_WxData_OK = false;
-    Received_WxData_OK = (obtain_wx_data("weather") && obtain_wx_data("forecast"));
-    // Now only refresh the screen if all the data was received OK, otherwise wait until the next timed check otherwise wait until the next timed check
-    if (Received_WxData_OK)
-    {
-      StopWiFi(); // Reduces power consumption
-      gfx.init();
-      gfx.setRotation(0);
-      gfx.setColor(EPD_BLACK);
-      gfx.fillBuffer(EPD_WHITE);
-      gfx.setTextAlignment(TEXT_ALIGN_LEFT);
-      Display_Weather();
-      DrawBattery(SCREEN_WIDTH - 65, 0);
-      gfx.commit();
-      delay(2000);
-    }
-  }
+  Serial.println(sensor.readTemperature());
+  Serial.println(sensor.readHumidity());
+  
+  Serial.println(remoteTemp);
+  Serial.println(remoteHumidity);
 
-  void Draw_Main_Wx(int x, int y)
-  {
-    DrawWind(x, y, WxConditions[0].Winddir, WxConditions[0].Windspeed);
-    gfx.setTextAlignment(TEXT_ALIGN_CENTER);
-    gfx.setFont(ArialRoundedMTBold_14);
-    gfx.drawString(x, y - 28, String(WxConditions[0].High, 0) + "� | " + String(WxConditions[0].Low, 0) + "�"); // Show forecast high and Low
-    gfx.setFont(ArialMT_Plain_24);
-    gfx.drawString(x - 5, y - 10, String(WxConditions[0].Temperature, 1) + "�"); // Show current Temperature
-    gfx.setFont(ArialRoundedMTBold_14);
-    gfx.setTextAlignment(TEXT_ALIGN_LEFT);
-    gfx.drawString(x + String(WxConditions[0].Temperature, 1).length() * 11 / 2, y - 9, Units == "M" ? "C" : "F"); // Add in smaller Temperature unit
-    gfx.setFont(ArialRoundedMTBold_14);
-    gfx.setTextAlignment(TEXT_ALIGN_LEFT);
-  }
-
-  int StartWiFi()
-  {
-    int connAttempts = 0;
-    Serial.print(F("\r\nConnecting to: "));
-    Serial.println(String(ssid1));
-    WiFi.disconnect();
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid1, password1);
-    while (WiFi.status() != WL_CONNECTED)
-    {
-      delay(500);
-      Serial.print(".");
-      if (connAttempts > 20)
-      {
-        WiFi.disconnect();
-        sleepyTime();
-      }
-      connAttempts++;
-    }
-    Serial.println("WiFi connected at: " + String(WiFi.localIP()));
-    return 1;
-  }
-
-  void StopWiFi()
-  {
-    WiFi.disconnect();
-    WiFi.mode(WIFI_OFF);
-    wifisection = millis() - wifisection;
-  }
+  Serial.println(voltage);
+}
