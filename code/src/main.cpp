@@ -146,8 +146,8 @@ void connectToMqtt()
 void onMqttConnect(bool sessionPresent)
 {
   Serial.println("Connected to MQTT.");
-  mqttClient.subscribe("rtl_433/cba70ce2a24f/devices/Acurite-Tower/A/4131/humidity", 1);
-  mqttClient.subscribe("rtl_433/cba70ce2a24f/devices/Acurite-Tower/A/4131/temperature_C", 1);
+  mqttClient.subscribe("rtl_433/Acurite-Tower/A/4131/humidity", 1);
+  mqttClient.subscribe("rtl_433/Acurite-Tower/A/4131/temperature_C", 1);
 }
 
 void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total)
@@ -213,8 +213,8 @@ void loop()
   if (lastTemp > waitingMillis && lastHumidity > waitingMillis)
   {
     Serial.println("Update received, draw and sleep...");
-    mqttClient.unsubscribe("rtl_433/cba70ce2a24f/devices/Acurite-Tower/A/4131/humidity");
-    mqttClient.unsubscribe("rtl_433/cba70ce2a24f/devices/Acurite-Tower/A/4131/temperature_C");
+    mqttClient.unsubscribe("rtl_433/Acurite-Tower/A/4131/humidity");
+    mqttClient.unsubscribe("rtl_433/Acurite-Tower/A/4131/temperature_C");
     StopWiFi();
     mqttClient.disconnect();
 
