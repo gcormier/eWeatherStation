@@ -1,0 +1,43 @@
+# PIN CHarge Stat 14
+# Pin ADC Voltage Battery 32
+
+
+# Example configuration entry
+esphome:
+  name: waveshare_display
+  platform: ESP32
+  #board: esp32dev
+  #platformio_options:
+  #  board_build.mcu: esp32s2
+  board: nodemcu-32s
+  platformio_options:
+    platform: espressif32@3.2.0
+    board_build.mcu: esp32s2
+    platform_packages: |-4
+        framework-arduinoespressif32 @ https://github.com/espressif/arduino-esp32.git#master
+
+
+#time:
+#  - platform: sntp
+#    id: sntp_time
+#    timezone: America/Toronto
+sensor:
+  - platform: adc
+    pin: 32
+    attenuation: 11db
+    name: "ePaper Battery Voltage"
+    id: battery_voltage
+    filters:
+      - multiply: 0.18
+spi:
+  clk_pin: 18
+  mosi_pin: 23
+
+#display:
+#  - platform: waveshare_epaper
+#    cs_pin: 5
+#    dc_pin: 17
+#    busy_pin: 4
+#    reset_pin: 16
+#    model: 4.20in
+#    #full_update_every: 30
